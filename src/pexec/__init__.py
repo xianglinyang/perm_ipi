@@ -42,6 +42,17 @@ from .scoring import (
     score_logit_distribution,
     stable_softmax,
 )
+from .projection import (
+    ActionParameterDistribution,
+    ActionProbability,
+    ParameterCombinationProbability,
+    ParameterMarginal,
+    ParameterValueProbability,
+    ProjectionError,
+    ProjectionErrorCode,
+    ProjectionResult,
+    project_execution_distribution,
+)
 from .sampling import (
     SamplingError,
     SamplingErrorCode,
@@ -61,6 +72,8 @@ from .vllm_backend import (
 
 __all__ = [
     "ActionSchema",
+    "ActionParameterDistribution",
+    "ActionProbability",
     "AgentContext",
     "Candidate",
     "CandidateScore",
@@ -79,8 +92,14 @@ __all__ = [
     "MeasurementMethod",
     "MeasurementRequest",
     "OutputProtocol",
+    "ParameterCombinationProbability",
+    "ParameterMarginal",
+    "ParameterValueProbability",
     "ParseErrorCode",
     "ParsedCandidate",
+    "ProjectionError",
+    "ProjectionErrorCode",
+    "ProjectionResult",
     "SampledCandidate",
     "SamplingResult",
     "SamplingError",
@@ -100,6 +119,7 @@ __all__ = [
     "XMLFormatAdapter",
     "YAMLFormatAdapter",
     "get_format_adapter",
+    "project_execution_distribution",
     "score_logit_distribution",
     "sample_execution_distribution",
     "stable_softmax",
