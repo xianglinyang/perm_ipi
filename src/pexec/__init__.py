@@ -36,6 +36,22 @@ from .formats import (
     get_format_adapter,
     validate_decision,
 )
+from .scoring import (
+    ScoringError,
+    ScoringErrorCode,
+    score_logit_distribution,
+    stable_softmax,
+)
+from .transformers_backend import (
+    TransformersBackendError,
+    TransformersBackendErrorCode,
+    TransformersScoringBackend,
+)
+from .vllm_backend import (
+    VLLMBackendError,
+    VLLMBackendErrorCode,
+    VLLMScoringBackend,
+)
 
 __all__ = [
     "ActionSchema",
@@ -61,11 +77,21 @@ __all__ = [
     "ParsedCandidate",
     "SampledCandidate",
     "SamplingResult",
+    "ScoringError",
+    "ScoringErrorCode",
     "SequenceScoringBackend",
     "SequenceTokenScores",
     "StructuredFormat",
+    "TransformersBackendError",
+    "TransformersBackendErrorCode",
+    "TransformersScoringBackend",
+    "VLLMBackendError",
+    "VLLMBackendErrorCode",
+    "VLLMScoringBackend",
     "XMLFormatAdapter",
     "YAMLFormatAdapter",
     "get_format_adapter",
+    "score_logit_distribution",
+    "stable_softmax",
     "validate_decision",
 ]

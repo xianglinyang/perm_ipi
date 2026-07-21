@@ -270,8 +270,9 @@ class CandidateScore:
         _nonempty(self.candidate_id, "candidate_id")
         if self.token_count <= 0:
             raise ContractError("token_count must be positive")
-        if math.isnan(self.logprob) or math.isnan(self.normalized_logprob):
-            raise ContractError("log-probabilities must not be NaN")
+        for value in (self.logprob, self.normalized_logprob):
+            if math.isnan(value) or value == math.inf or value > 1e-6:
+                raise ContractError("log-probabilities must be finite non-positive values or -infinity")
         if not math.isfinite(self.probability) or not 0 <= self.probability <= 1:
             raise ContractError("probability must be finite and in [0, 1]")
 

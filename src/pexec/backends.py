@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
@@ -25,6 +26,16 @@ class SequenceTokenScores:
             raise ValueError("a candidate must contain at least one token")
         if len(self.token_ids) != len(self.token_logprobs):
             raise ValueError("token_ids and token_logprobs must have equal length")
+        if any(
+            isinstance(token_id, bool) or not isinstance(token_id, int) or token_id < 0
+            for token_id in self.token_ids
+        ):
+            raise ValueError("token_ids must contain non-negative integers")
+        for logprob in self.token_logprobs:
+            if isinstance(logprob, bool) or not isinstance(logprob, (int, float)):
+                raise ValueError("token_logprobs must be numeric")
+            if math.isnan(logprob) or logprob == math.inf or logprob > 1e-6:
+                raise ValueError("token_logprobs must be valid log-probabilities")
 
 
 @dataclass(frozen=True, slots=True)
