@@ -21,6 +21,7 @@ from .contracts import (
     _nonempty,
     _thaw_json,
 )
+from .reasoning_aggregation import ReasoningAggregationResult
 
 
 class ProjectionErrorCode(str, Enum):
@@ -404,13 +405,13 @@ def _parse_candidate_identity(candidate_id: str, value: JSONValue) -> tuple[str,
 
 def _validate_request_result(
     request: MeasurementRequest,
-    result: LogitResult | SamplingResult,
+    result: LogitResult | SamplingResult | ReasoningAggregationResult,
 ) -> dict[str, float]:
     if request.method is MeasurementMethod.LOGIT:
-        if not isinstance(result, LogitResult):
+        if not isinstance(result, (LogitResult, ReasoningAggregationResult)):
             raise ProjectionError(
                 ProjectionErrorCode.RESULT_TYPE_MISMATCH,
-                "a logit request requires a LogitResult",
+                "a logit request requires a LogitResult or ReasoningAggregationResult",
             )
     elif not isinstance(result, SamplingResult):
         raise ProjectionError(
@@ -442,7 +443,7 @@ def _validate_request_result(
 
 def project_execution_distribution(
     request: MeasurementRequest,
-    result: LogitResult | SamplingResult,
+    result: LogitResult | SamplingResult | ReasoningAggregationResult,
 ) -> ProjectionResult:
     """Project a finite candidate distribution without re-running the model."""
 
@@ -593,6 +594,9 @@ def project_execution_distribution(
     )
     metadata: dict[str, JSONValue] = dict(request.metadata)
     metadata["projection"] = "action_and_parameters"
+    if isinstance(result, ReasoningAggregationResult):
+        metadata["aggregation"] = result.estimator
+        metadata["num_reasoning_samples"] = result.num_reasoning_samples
     return ProjectionResult(
         checkpoint=result.checkpoint,
         method=request.method,

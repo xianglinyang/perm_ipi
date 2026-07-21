@@ -53,6 +53,14 @@ from .projection import (
     ProjectionResult,
     project_execution_distribution,
 )
+from .reasoning_aggregation import (
+    CandidateReasoningStatistics,
+    ReasoningAggregationError,
+    ReasoningAggregationErrorCode,
+    ReasoningAggregationResult,
+    ReasoningConditional,
+    aggregate_reasoning_conditionals,
+)
 from .sampling import (
     SamplingError,
     SamplingErrorCode,
@@ -77,6 +85,7 @@ __all__ = [
     "AgentContext",
     "Candidate",
     "CandidateScore",
+    "CandidateReasoningStatistics",
     "ChatMessage",
     "CheckpointPrefix",
     "ContractError",
@@ -100,6 +109,10 @@ __all__ = [
     "ProjectionError",
     "ProjectionErrorCode",
     "ProjectionResult",
+    "ReasoningAggregationError",
+    "ReasoningAggregationErrorCode",
+    "ReasoningAggregationResult",
+    "ReasoningConditional",
     "SampledCandidate",
     "SamplingResult",
     "SamplingError",
@@ -119,6 +132,7 @@ __all__ = [
     "XMLFormatAdapter",
     "YAMLFormatAdapter",
     "get_format_adapter",
+    "aggregate_reasoning_conditionals",
     "project_execution_distribution",
     "score_logit_distribution",
     "sample_execution_distribution",
