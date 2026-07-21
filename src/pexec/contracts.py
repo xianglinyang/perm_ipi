@@ -25,6 +25,7 @@ class ContractError(ValueError):
 class StructuredFormat(str, Enum):
     XML = "xml"
     JSON = "json"
+    YAML = "yaml"
 
 
 class MeasurementMethod(str, Enum):
