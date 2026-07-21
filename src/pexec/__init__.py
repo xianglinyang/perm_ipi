@@ -55,6 +55,7 @@ from .transformers_backend import (
 from .vllm_backend import (
     VLLMBackendError,
     VLLMBackendErrorCode,
+    VLLMGenerationBackend,
     VLLMScoringBackend,
 )
 
@@ -94,6 +95,7 @@ __all__ = [
     "TransformersScoringBackend",
     "VLLMBackendError",
     "VLLMBackendErrorCode",
+    "VLLMGenerationBackend",
     "VLLMScoringBackend",
     "XMLFormatAdapter",
     "YAMLFormatAdapter",
