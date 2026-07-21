@@ -6,7 +6,13 @@ import math
 from dataclasses import dataclass, field
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
-from .contracts import AgentContext, Candidate, GenerationConfig, JSONValue
+from .contracts import (
+    AgentContext,
+    Candidate,
+    GenerationConfig,
+    JSONValue,
+    _freeze_metadata,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +53,25 @@ class GeneratedText:
     text: str
     finish_reason: str | None = None
     metadata: Mapping[str, JSONValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.sample_index, bool)
+            or not isinstance(self.sample_index, int)
+            or self.sample_index < 0
+        ):
+            raise ValueError("sample_index must be a non-negative integer")
+        if (
+            isinstance(self.seed, bool)
+            or not isinstance(self.seed, int)
+            or self.seed < 0
+        ):
+            raise ValueError("seed must be a non-negative integer")
+        if not isinstance(self.text, str):
+            raise ValueError("text must be a string")
+        if self.finish_reason is not None and not isinstance(self.finish_reason, str):
+            raise ValueError("finish_reason must be a string or None")
+        object.__setattr__(self, "metadata", _freeze_metadata(self.metadata))
 
 
 @runtime_checkable

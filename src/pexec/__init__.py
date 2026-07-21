@@ -42,6 +42,11 @@ from .scoring import (
     score_logit_distribution,
     stable_softmax,
 )
+from .sampling import (
+    SamplingError,
+    SamplingErrorCode,
+    sample_execution_distribution,
+)
 from .transformers_backend import (
     TransformersBackendError,
     TransformersBackendErrorCode,
@@ -77,6 +82,8 @@ __all__ = [
     "ParsedCandidate",
     "SampledCandidate",
     "SamplingResult",
+    "SamplingError",
+    "SamplingErrorCode",
     "ScoringError",
     "ScoringErrorCode",
     "SequenceScoringBackend",
@@ -92,6 +99,7 @@ __all__ = [
     "YAMLFormatAdapter",
     "get_format_adapter",
     "score_logit_distribution",
+    "sample_execution_distribution",
     "stable_softmax",
     "validate_decision",
 ]

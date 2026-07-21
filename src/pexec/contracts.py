@@ -8,6 +8,7 @@ and a finite set of exact candidate continuations.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -327,8 +328,12 @@ class SampledCandidate:
 
     def __post_init__(self) -> None:
         _nonempty(self.candidate_id, "candidate_id")
-        if self.count < 0:
-            raise ContractError("sample count must be non-negative")
+        if (
+            isinstance(self.count, bool)
+            or not isinstance(self.count, int)
+            or self.count < 0
+        ):
+            raise ContractError("sample count must be a non-negative integer")
         if not math.isfinite(self.probability) or not 0 <= self.probability <= 1:
             raise ContractError("probability must be finite and in [0, 1]")
 
@@ -343,16 +348,33 @@ class GenerationRecord:
     raw_generation: str
     candidate_id: str | None
     malformed_reason: str | None = None
+    finish_reason: str | None = None
+    metadata: Mapping[str, JSONValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.sample_index < 0 or self.seed < 0:
-            raise ContractError("sample_index and seed must be non-negative")
+        if (
+            isinstance(self.sample_index, bool)
+            or not isinstance(self.sample_index, int)
+            or self.sample_index < 0
+        ):
+            raise ContractError("sample_index must be a non-negative integer")
+        if (
+            isinstance(self.seed, bool)
+            or not isinstance(self.seed, int)
+            or self.seed < 0
+        ):
+            raise ContractError("seed must be a non-negative integer")
         if not isinstance(self.raw_generation, str):
             raise ContractError("raw_generation must be a string")
+        if self.finish_reason is not None and not isinstance(self.finish_reason, str):
+            raise ContractError("finish_reason must be a string or None")
+        object.__setattr__(self, "metadata", _freeze_metadata(self.metadata))
         if self.candidate_id is None:
             _nonempty(self.malformed_reason or "", "malformed_reason")
-        elif self.malformed_reason is not None:
-            raise ContractError("a parsed generation cannot also have malformed_reason")
+        else:
+            _nonempty(self.candidate_id, "candidate_id")
+            if self.malformed_reason is not None:
+                raise ContractError("a parsed generation cannot also have malformed_reason")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -361,6 +383,8 @@ class GenerationRecord:
             "raw_generation": self.raw_generation,
             "candidate": self.candidate_id,
             "malformed_reason": self.malformed_reason,
+            "finish_reason": self.finish_reason,
+            "metadata": _thaw_json(self.metadata),
         }
 
 
@@ -390,13 +414,52 @@ class SamplingResult:
             raise ContractError("result num_samples must match generation config")
         if len(self.raw_generations) != self.num_samples:
             raise ContractError("raw_generations must contain one record per sample")
-        if self.malformed_output_count < 0:
-            raise ContractError("malformed_output_count must be non-negative")
-        if any(count < 0 for count in self.parsed_counts.values()):
-            raise ContractError("parsed counts must be non-negative")
+        if any(not isinstance(item, GenerationRecord) for item in self.raw_generations):
+            raise ContractError("raw_generations must contain only GenerationRecord values")
+        if (
+            isinstance(self.malformed_output_count, bool)
+            or not isinstance(self.malformed_output_count, int)
+            or self.malformed_output_count < 0
+        ):
+            raise ContractError("malformed_output_count must be a non-negative integer")
+        if any(
+            isinstance(count, bool) or not isinstance(count, int) or count < 0
+            for count in self.parsed_counts.values()
+        ):
+            raise ContractError("parsed counts must be non-negative integers")
         if sum(self.parsed_counts.values()) + self.malformed_output_count != self.num_samples:
             raise ContractError("parsed counts plus malformed count must equal num_samples")
 
+        indices = [record.sample_index for record in self.raw_generations]
+        if indices != list(range(self.num_samples)):
+            raise ContractError("raw_generations must be ordered by sample_index without gaps")
+        for record in self.raw_generations:
+            if record.seed != self.generation.seed_for_sample(record.sample_index):
+                raise ContractError("raw generation seed does not match generation config")
+        record_counts = Counter(
+            record.candidate_id
+            for record in self.raw_generations
+            if record.candidate_id is not None
+        )
+        if dict(record_counts) != {
+            candidate_id: count
+            for candidate_id, count in self.parsed_counts.items()
+            if count > 0
+        }:
+            raise ContractError("parsed_counts must match parsed raw generation records")
+        record_malformed_count = sum(
+            record.candidate_id is None for record in self.raw_generations
+        )
+        if record_malformed_count != self.malformed_output_count:
+            raise ContractError(
+                "malformed_output_count must match malformed raw generation records"
+            )
+
+        if any(not isinstance(item, SampledCandidate) for item in self.distribution):
+            raise ContractError("distribution must contain only SampledCandidate values")
+        distribution_ids = [item.candidate_id for item in self.distribution]
+        if len(distribution_ids) != len(set(distribution_ids)):
+            raise ContractError("distribution candidate IDs must be unique")
         expected_counts = {item.candidate_id: item.count for item in self.distribution}
         if expected_counts != dict(self.parsed_counts):
             raise ContractError("distribution counts must match parsed_counts")
