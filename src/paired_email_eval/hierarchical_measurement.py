@@ -53,6 +53,23 @@ class HierarchicalMeasurementError(ValueError):
         self.code = code
 
 
+def _unit_probability(value: float, path: str, *, positive: bool) -> float:
+    """Validate probability mass while removing harmless floating-point ulps."""
+
+    invalid_lower = value <= 0 if positive else (
+        value < 0 and not math.isclose(value, 0.0, abs_tol=1e-12)
+    )
+    if not math.isfinite(value) or invalid_lower or (
+        value > 1 and not math.isclose(value, 1.0, abs_tol=1e-12)
+    ):
+        interval = "(0, 1]" if positive else "[0, 1]"
+        raise HierarchicalMeasurementError(
+            HierarchicalMeasurementErrorCode.INVALID_INPUT,
+            f"{path} must be in {interval}",
+        )
+    return min(1.0, max(0.0, float(value)))
+
+
 def _canonical_params(value: Any, path: str = "params") -> Mapping[str, str]:
     if not isinstance(value, Mapping) or set(value) != set(PARAMETER_ORDER):
         raise HierarchicalMeasurementError(
@@ -109,11 +126,15 @@ class ParameterJointProbability:
             )
         object.__setattr__(self, "params", _canonical_params(self.params))
         object.__setattr__(self, "source_ids", tuple(self.source_ids))
-        if not math.isfinite(self.probability) or not 0 < self.probability <= 1:
-            raise HierarchicalMeasurementError(
-                HierarchicalMeasurementErrorCode.INVALID_INPUT,
-                "joint parameter probability must be in (0, 1]",
-            )
+        object.__setattr__(
+            self,
+            "probability",
+            _unit_probability(
+                self.probability,
+                "joint parameter probability",
+                positive=True,
+            ),
+        )
         if self.count is not None and (
             isinstance(self.count, bool)
             or not isinstance(self.count, int)
@@ -145,11 +166,15 @@ class ParameterValueProbability:
                 HierarchicalMeasurementErrorCode.INVALID_INPUT,
                 "parameter value must be a string",
             )
-        if not math.isfinite(self.probability) or not 0 < self.probability <= 1:
-            raise HierarchicalMeasurementError(
-                HierarchicalMeasurementErrorCode.INVALID_INPUT,
-                "parameter value probability must be in (0, 1]",
-            )
+        object.__setattr__(
+            self,
+            "probability",
+            _unit_probability(
+                self.probability,
+                "parameter value probability",
+                positive=True,
+            ),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {"value": self.value, "probability": self.probability}
@@ -184,19 +209,24 @@ class SequentialParameterConditional:
             frozen_given[key] = value
         object.__setattr__(self, "given", MappingProxyType(frozen_given))
         object.__setattr__(self, "distribution", tuple(self.distribution))
-        if not math.isfinite(self.branch_probability) or not 0 < self.branch_probability <= 1:
-            raise HierarchicalMeasurementError(
-                HierarchicalMeasurementErrorCode.INVALID_INPUT,
-                "branch_probability must be in (0, 1]",
-            )
-        if (
-            not math.isfinite(self.unresolved_probability)
-            or not 0 <= self.unresolved_probability <= 1
-        ):
-            raise HierarchicalMeasurementError(
-                HierarchicalMeasurementErrorCode.INVALID_INPUT,
-                "unresolved_probability must be in [0, 1]",
-            )
+        object.__setattr__(
+            self,
+            "branch_probability",
+            _unit_probability(
+                self.branch_probability,
+                "branch_probability",
+                positive=True,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "unresolved_probability",
+            _unit_probability(
+                self.unresolved_probability,
+                "unresolved_probability",
+                positive=False,
+            ),
+        )
         if not self.distribution and self.unresolved_probability != 1.0:
             raise HierarchicalMeasurementError(
                 HierarchicalMeasurementErrorCode.INVALID_INPUT,

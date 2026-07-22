@@ -1,4 +1,4 @@
-"""Run one paired-email scenario through hierarchical PExec measurement."""
+"""Run paired-email scenarios through hierarchical PExec measurement."""
 
 from __future__ import annotations
 
@@ -25,16 +25,16 @@ DEFAULT_MODEL_PATH = Path(
 DEFAULT_MODEL_LABEL = (
     "Qwen/Qwen3.5-9B@c202236235762e1c871ad0ccb60c8ee5ba337b9a"
 )
-DEFAULT_OUTPUT = (
-    REPOSITORY_ROOT
-    / "exp"
-    / "Task2"
-    / "results"
-    / "qwen3_5_9b_scenario_001_hierarchical.jsonl"
-)
-DEFAULT_SUMMARY = DEFAULT_OUTPUT.with_name(
-    "qwen3_5_9b_scenario_001_hierarchical_summary.json"
-)
+
+
+def default_output_path(scenario_limit: int) -> Path:
+    return (
+        REPOSITORY_ROOT
+        / "exp"
+        / "Task2"
+        / "results"
+        / f"qwen3_5_9b_first_{scenario_limit}_hierarchical.jsonl"
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,8 +50,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.4)
     parser.add_argument("--max-model-len", type=int, default=4096)
     parser.add_argument("--max-num-seqs", type=int, default=64)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--summary", type=Path)
     return parser.parse_args()
 
 
@@ -80,8 +80,12 @@ def main() -> None:
     args = parse_args()
     if not args.model.is_dir():
         raise FileNotFoundError(f"model snapshot not found: {args.model}")
-    if args.scenario_limit != 1:
-        raise ValueError("this smoke script intentionally runs exactly one scenario")
+    if args.scenario_limit <= 0:
+        raise ValueError("scenario-limit must be positive")
+    output_path = args.output or default_output_path(args.scenario_limit)
+    summary_path = args.summary or output_path.with_name(
+        f"{output_path.stem}_summary.json"
+    )
 
     from vllm import LLM
 
@@ -111,27 +115,28 @@ def main() -> None:
         VLLMGenerationBackend(**backend_kwargs),
         VLLMScoringBackend(**backend_kwargs),
         generation,
-        args.output,
+        output_path,
         resume=True,
     )
-    summary = summarize_measurement_file(args.output)
+    summary = summarize_measurement_file(output_path)
     summary_payload = summary.to_dict()
-    args.summary.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
     serialized = json.dumps(summary_payload, ensure_ascii=False, indent=2) + "\n"
-    if args.summary.exists():
-        existing = args.summary.read_text(encoding="utf-8")
+    if summary_path.exists():
+        existing = summary_path.read_text(encoding="utf-8")
         if existing != serialized:
             raise FileExistsError(
-                f"summary already exists with different content: {args.summary}"
+                f"summary already exists with different content: {summary_path}"
             )
     else:
-        args.summary.write_text(serialized, encoding="utf-8")
+        summary_path.write_text(serialized, encoding="utf-8")
 
     output = {
-        "scenario": scenarios[0].scenario_id,
-        "cases": [context.case for context in contexts],
+        "scenario_limit": len(scenarios),
+        "scenario_ids": [scenario.scenario_id for scenario in scenarios],
+        "num_contexts": len(contexts),
         "measurement_file": str(report.output_path),
-        "summary_file": str(args.summary.resolve()),
+        "summary_file": str(summary_path.resolve()),
         "resumed_records": report.resumed_records,
         "new_records": report.new_records,
         "summary": concise_summary(summary_payload),
