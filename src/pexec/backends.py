@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
 from .contracts import (
     AgentContext,
@@ -12,7 +12,43 @@ from .contracts import (
     GenerationConfig,
     JSONValue,
     _freeze_metadata,
+    _thaw_json,
 )
+
+
+def huggingface_tool_schemas(
+    tools: Sequence[Mapping[str, JSONValue]],
+) -> list[dict[str, Any]]:
+    """Render provider-neutral tools as Hugging Face function schemas.
+
+    Upstream agent contexts use the Anthropic-style ``input_schema`` field,
+    while Hugging Face chat-template validation requires the OpenAI-style
+    ``type/function/parameters`` envelope.  The conversion changes only the
+    provider rendering, not the stored context or parameter schema.
+    """
+
+    rendered: list[dict[str, Any]] = []
+    for tool in tools:
+        value = _thaw_json(tool)
+        if value.get("type") == "function" and isinstance(
+            value.get("function"), Mapping
+        ):
+            rendered.append(value)
+            continue
+        name = value.get("name")
+        parameters = value.get("input_schema")
+        if isinstance(name, str) and name.strip() and isinstance(parameters, Mapping):
+            function: dict[str, Any] = {
+                "name": name,
+                "parameters": dict(parameters),
+            }
+            description = value.get("description")
+            if isinstance(description, str) and description:
+                function["description"] = description
+            rendered.append({"type": "function", "function": function})
+            continue
+        rendered.append(value)
+    return rendered
 
 
 @dataclass(frozen=True, slots=True)

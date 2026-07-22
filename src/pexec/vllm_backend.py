@@ -13,6 +13,7 @@ from .backends import (
     GenerationBatchRequest,
     ScoringBatchRequest,
     SequenceTokenScores,
+    huggingface_tool_schemas,
 )
 from .contracts import (
     AgentContext,
@@ -20,7 +21,6 @@ from .contracts import (
     ContractError,
     GenerationConfig,
     JSONValue,
-    _thaw_json,
 )
 
 
@@ -133,7 +133,7 @@ class _VLLMBackendBase:
         kwargs: dict[str, Any] = dict(self.chat_template_kwargs or {})
         kwargs.update(tokenize=False, add_generation_prompt=True)
         if context.tools:
-            kwargs["tools"] = [_thaw_json(tool) for tool in context.tools]
+            kwargs["tools"] = huggingface_tool_schemas(context.tools)
         try:
             rendered = self.tokenizer.apply_chat_template(messages, **kwargs)
         except Exception as error:
