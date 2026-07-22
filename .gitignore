@@ -225,3 +225,5 @@ code_data/
 progress.md
 
 tests
+*.json
+*.jsonl
