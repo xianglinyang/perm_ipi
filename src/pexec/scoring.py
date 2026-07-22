@@ -8,6 +8,8 @@ from typing import Mapping, Sequence
 
 from .backends import SequenceScoringBackend, SequenceTokenScores
 from .contracts import (
+    AgentContext,
+    Candidate,
     CandidateScore,
     ContractError,
     JSONValue,
@@ -94,12 +96,51 @@ def score_logit_distribution(
     if request.method is not MeasurementMethod.LOGIT:
         raise ScoringError(ScoringErrorCode.WRONG_METHOD, "logit scorer requires a logit request")
 
-    raw_scores = backend.score_sequences(
+    metadata: dict[str, JSONValue] = dict(request.metadata)
+    metadata["format"] = request.format.value
+    return score_candidate_sequences(
         context=request.context,
         prefix=request.prefix.text,
+        checkpoint=request.prefix.checkpoint,
         candidates=request.candidates,
+        backend=backend,
+        metadata=metadata,
     )
-    expected_ids = [candidate.candidate_id for candidate in request.candidates]
+
+
+def score_candidate_sequences(
+    *,
+    context: AgentContext,
+    prefix: str,
+    checkpoint: str,
+    candidates: Sequence[Candidate],
+    backend: SequenceScoringBackend,
+    metadata: Mapping[str, JSONValue] | None = None,
+) -> LogitResult:
+    """Score a finite set of exact continuations without imposing a format."""
+
+    if not isinstance(context, AgentContext):
+        raise ContractError("context must be an AgentContext")
+    if not isinstance(prefix, str):
+        raise ContractError("prefix must be a string")
+    if not isinstance(checkpoint, str) or not checkpoint.strip():
+        raise ContractError("checkpoint must be a non-empty string")
+    selected = tuple(candidates)
+    if not selected or any(not isinstance(candidate, Candidate) for candidate in selected):
+        raise ContractError("candidates must contain at least one Candidate")
+    candidate_ids = [candidate.candidate_id for candidate in selected]
+    candidate_sequences = [candidate.sequence for candidate in selected]
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise ContractError("candidate IDs must be unique")
+    if len(candidate_sequences) != len(set(candidate_sequences)):
+        raise ContractError("candidate sequences must be unique")
+
+    raw_scores = backend.score_sequences(
+        context=context,
+        prefix=prefix,
+        candidates=selected,
+    )
+    expected_ids = candidate_ids
     by_id = _validate_backend_scores(raw_scores, expected_ids)
 
     totals: list[float] = []
@@ -136,11 +177,9 @@ def score_logit_distribution(
             strict=True,
         )
     )
-    metadata: dict[str, JSONValue] = dict(request.metadata)
-    metadata["format"] = request.format.value
     return LogitResult(
-        checkpoint=request.prefix.checkpoint,
+        checkpoint=checkpoint,
         distribution=distribution,
         model_id=backend.model_id,
-        metadata=metadata,
+        metadata=dict(metadata or {}),
     )

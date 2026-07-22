@@ -40,6 +40,7 @@ from .scoring import (
     ScoringError,
     ScoringErrorCode,
     score_logit_distribution,
+    score_candidate_sequences,
     stable_softmax,
 )
 from .projection import (
@@ -52,6 +53,18 @@ from .projection import (
     ProjectionErrorCode,
     ProjectionResult,
     project_execution_distribution,
+)
+from .prefix_measurement import (
+    ParsedPrefixValue,
+    PrefixGenerationRecord,
+    PrefixMeasurementError,
+    PrefixMeasurementErrorCode,
+    PrefixMeasurementRequest,
+    PrefixParseError,
+    PrefixSampledValue,
+    PrefixSamplingResult,
+    PrefixValueParser,
+    measure_prefix_distribution,
 )
 from .reasoning_aggregation import (
     CandidateReasoningStatistics,
@@ -109,6 +122,15 @@ __all__ = [
     "ProjectionError",
     "ProjectionErrorCode",
     "ProjectionResult",
+    "ParsedPrefixValue",
+    "PrefixGenerationRecord",
+    "PrefixMeasurementError",
+    "PrefixMeasurementErrorCode",
+    "PrefixMeasurementRequest",
+    "PrefixParseError",
+    "PrefixSampledValue",
+    "PrefixSamplingResult",
+    "PrefixValueParser",
     "ReasoningAggregationError",
     "ReasoningAggregationErrorCode",
     "ReasoningAggregationResult",
@@ -134,7 +156,9 @@ __all__ = [
     "get_format_adapter",
     "aggregate_reasoning_conditionals",
     "project_execution_distribution",
+    "measure_prefix_distribution",
     "score_logit_distribution",
+    "score_candidate_sequences",
     "sample_execution_distribution",
     "stable_softmax",
     "validate_decision",
