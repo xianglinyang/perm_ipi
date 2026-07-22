@@ -227,3 +227,5 @@ progress.md
 tests
 *.json
 *.jsonl
+
+exp/

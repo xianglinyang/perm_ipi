@@ -74,6 +74,39 @@ class GeneratedText:
         object.__setattr__(self, "metadata", _freeze_metadata(self.metadata))
 
 
+@dataclass(frozen=True, slots=True)
+class GenerationBatchRequest:
+    context: AgentContext
+    prefix: str
+    config: GenerationConfig
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.context, AgentContext):
+            raise ValueError("batch generation context must be an AgentContext")
+        if not isinstance(self.prefix, str):
+            raise ValueError("batch generation prefix must be a string")
+        if not isinstance(self.config, GenerationConfig):
+            raise ValueError("batch generation config must be a GenerationConfig")
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringBatchRequest:
+    context: AgentContext
+    prefix: str
+    candidates: tuple[Candidate, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.context, AgentContext):
+            raise ValueError("batch scoring context must be an AgentContext")
+        if not isinstance(self.prefix, str):
+            raise ValueError("batch scoring prefix must be a string")
+        object.__setattr__(self, "candidates", tuple(self.candidates))
+        if not self.candidates or any(
+            not isinstance(candidate, Candidate) for candidate in self.candidates
+        ):
+            raise ValueError("batch scoring candidates must be non-empty")
+
+
 @runtime_checkable
 class SequenceScoringBackend(Protocol):
     """Capability required by the full-sequence logit estimator."""
@@ -104,3 +137,23 @@ class GenerationBackend(Protocol):
         prefix: str,
         config: GenerationConfig,
     ) -> Sequence[GeneratedText]: ...
+
+
+@runtime_checkable
+class BatchGenerationBackend(GenerationBackend, Protocol):
+    """Optional capability for multiple independently-configured prompts."""
+
+    def generate_batch(
+        self,
+        requests: Sequence[GenerationBatchRequest],
+    ) -> Sequence[Sequence[GeneratedText]]: ...
+
+
+@runtime_checkable
+class BatchSequenceScoringBackend(SequenceScoringBackend, Protocol):
+    """Optional capability for scoring candidate sets for many prefixes."""
+
+    def score_sequences_batch(
+        self,
+        requests: Sequence[ScoringBatchRequest],
+    ) -> Sequence[Sequence[SequenceTokenScores]]: ...

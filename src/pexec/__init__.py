@@ -1,8 +1,12 @@
 """Execution-distribution measurement primitives."""
 
 from .backends import (
+    BatchGenerationBackend,
+    BatchSequenceScoringBackend,
     GeneratedText,
+    GenerationBatchRequest,
     GenerationBackend,
+    ScoringBatchRequest,
     SequenceScoringBackend,
     SequenceTokenScores,
 )
@@ -92,6 +96,8 @@ from .vllm_backend import (
 )
 
 __all__ = [
+    "BatchGenerationBackend",
+    "BatchSequenceScoringBackend",
     "ActionSchema",
     "ActionParameterDistribution",
     "ActionProbability",
@@ -104,6 +110,7 @@ __all__ = [
     "ContractError",
     "CONTROL_ACTIONS",
     "GeneratedText",
+    "GenerationBatchRequest",
     "GenerationBackend",
     "GenerationConfig",
     "GenerationRecord",
@@ -135,6 +142,7 @@ __all__ = [
     "ReasoningAggregationErrorCode",
     "ReasoningAggregationResult",
     "ReasoningConditional",
+    "ScoringBatchRequest",
     "SampledCandidate",
     "SamplingResult",
     "SamplingError",

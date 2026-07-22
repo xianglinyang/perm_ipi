@@ -8,7 +8,12 @@ from enum import Enum
 from numbers import Real
 from typing import Any, Mapping, Sequence
 
-from .backends import GeneratedText, SequenceTokenScores
+from .backends import (
+    GeneratedText,
+    GenerationBatchRequest,
+    ScoringBatchRequest,
+    SequenceTokenScores,
+)
 from .contracts import (
     AgentContext,
     Candidate,
@@ -216,54 +221,62 @@ class VLLMScoringBackend(_VLLMBackendBase):
         prefix: str,
         candidates: Sequence[Candidate],
     ) -> Sequence[SequenceTokenScores]:
-        if not isinstance(prefix, str):
-            raise ContractError("prefix must be a string")
         if not candidates:
             return ()
+        return self.score_sequences_batch(
+            (ScoringBatchRequest(context, prefix, tuple(candidates)),)
+        )[0]
 
-        base_text = self._render_context(context) + prefix
-        base_ids = self._tokenize(base_text)
-        if not base_ids:
-            raise VLLMBackendError(
-                VLLMBackendErrorCode.TOKENIZATION_ERROR,
-                "context plus prefix must contain at least one token",
-            )
+    def score_sequences_batch(
+        self,
+        requests: Sequence[ScoringBatchRequest],
+    ) -> Sequence[Sequence[SequenceTokenScores]]:
+        selected = tuple(requests)
+        if any(not isinstance(request, ScoringBatchRequest) for request in selected):
+            raise ContractError("requests must contain ScoringBatchRequest values")
+        if not selected:
+            return ()
 
         max_length = self._max_context_length()
         full_prompts: list[list[int]] = []
-        candidate_token_ids: list[list[int]] = []
-        for candidate in candidates:
-            full_ids = self._tokenize(base_text + candidate.sequence)
-            if full_ids[: len(base_ids)] != base_ids:
-                raise VLLMBackendError(
-                    VLLMBackendErrorCode.TOKEN_BOUNDARY_MISMATCH,
-                    f"candidate {candidate.candidate_id!r} retokenizes the "
-                    "context/prefix boundary; "
-                    "use an explicit separator in the prefix",
-                )
-            continuation_ids = full_ids[len(base_ids) :]
-            if not continuation_ids:
+        descriptors: list[tuple[int, Candidate, int, list[int]]] = []
+        for request_index, request in enumerate(selected):
+            base_text = self._render_context(request.context) + request.prefix
+            base_ids = self._tokenize(base_text)
+            if not base_ids:
                 raise VLLMBackendError(
                     VLLMBackendErrorCode.TOKENIZATION_ERROR,
-                    f"candidate {candidate.candidate_id!r} has no continuation tokens",
+                    "context plus prefix must contain at least one token",
                 )
-            # vLLM's generate runner requires room for at least one decoded
-            # token even though this adapter discards that token.
-            if max_length is not None and len(full_ids) >= max_length:
-                raise VLLMBackendError(
-                    VLLMBackendErrorCode.CONTEXT_TOO_LONG,
-                    f"candidate {candidate.candidate_id!r} produces {len(full_ids)} tokens, "
-                    f"leaving no room within model limit {max_length} for vLLM's "
-                    "required one-token decode",
+            for candidate in request.candidates:
+                full_ids = self._tokenize(base_text + candidate.sequence)
+                if full_ids[: len(base_ids)] != base_ids:
+                    raise VLLMBackendError(
+                        VLLMBackendErrorCode.TOKEN_BOUNDARY_MISMATCH,
+                        f"candidate {candidate.candidate_id!r} retokenizes the "
+                        "context/prefix boundary; use an explicit separator in the prefix",
+                    )
+                continuation_ids = full_ids[len(base_ids) :]
+                if not continuation_ids:
+                    raise VLLMBackendError(
+                        VLLMBackendErrorCode.TOKENIZATION_ERROR,
+                        f"candidate {candidate.candidate_id!r} has no continuation tokens",
+                    )
+                if max_length is not None and len(full_ids) >= max_length:
+                    raise VLLMBackendError(
+                        VLLMBackendErrorCode.CONTEXT_TOO_LONG,
+                        f"candidate {candidate.candidate_id!r} produces {len(full_ids)} tokens, "
+                        f"leaving no room within model limit {max_length} for vLLM's required decode",
+                    )
+                full_prompts.append(full_ids)
+                descriptors.append(
+                    (request_index, candidate, len(base_ids), continuation_ids)
                 )
-            full_prompts.append(full_ids)
-            candidate_token_ids.append(continuation_ids)
 
-        sampling_params = _create_prompt_scoring_params()
         try:
             outputs = self.llm.generate(
                 prompts=full_prompts,
-                sampling_params=sampling_params,
+                sampling_params=_create_prompt_scoring_params(),
                 use_tqdm=False,
             )
         except VLLMBackendError:
@@ -274,17 +287,17 @@ class VLLMScoringBackend(_VLLMBackendBase):
                 f"vLLM failed while scoring candidate prompts: {error}",
             ) from error
 
-        if not isinstance(outputs, Sequence) or len(outputs) != len(candidates):
+        if not isinstance(outputs, Sequence) or len(outputs) != len(descriptors):
             raise VLLMBackendError(
                 VLLMBackendErrorCode.MODEL_OUTPUT_ERROR,
                 "vLLM returned an unexpected number of scoring outputs",
             )
 
-        results: list[SequenceTokenScores] = []
-        start = len(base_ids)
-        for candidate, expected_prompt, continuation_ids, output in zip(
-            candidates, full_prompts, candidate_token_ids, outputs
+        grouped: list[list[SequenceTokenScores]] = [[] for _ in selected]
+        for descriptor, expected_prompt, output in zip(
+            descriptors, full_prompts, outputs, strict=True
         ):
+            request_index, candidate, start, continuation_ids = descriptor
             returned_ids = getattr(output, "prompt_token_ids", None)
             normalized_returned_ids = (
                 list(returned_ids) if isinstance(returned_ids, Sequence) else None
@@ -321,8 +334,8 @@ class VLLMScoringBackend(_VLLMBackendBase):
                     VLLMBackendErrorCode.MODEL_OUTPUT_ERROR,
                     f"invalid vLLM token scores for candidate {candidate.candidate_id!r}: {error}",
                 ) from error
-            results.append(result)
-        return results
+            grouped[request_index].append(result)
+        return tuple(tuple(group) for group in grouped)
 
 
 @dataclass(slots=True)
@@ -372,28 +385,45 @@ class VLLMGenerationBackend(_VLLMBackendBase):
         prefix: str,
         config: GenerationConfig,
     ) -> Sequence[GeneratedText]:
-        if not isinstance(prefix, str):
-            raise ContractError("prefix must be a string")
-        if not isinstance(config, GenerationConfig):
-            raise ContractError("config must be a GenerationConfig")
+        return self.generate_batch(
+            (GenerationBatchRequest(context, prefix, config),)
+        )[0]
 
-        prompt_text = self._render_context(context) + prefix
-        prompt_ids = self._tokenize(prompt_text)
-        if not prompt_ids:
-            raise VLLMBackendError(
-                VLLMBackendErrorCode.TOKENIZATION_ERROR,
-                "context plus prefix must contain at least one token",
-            )
+    def generate_batch(
+        self,
+        requests: Sequence[GenerationBatchRequest],
+    ) -> Sequence[Sequence[GeneratedText]]:
+        selected = tuple(requests)
+        if any(not isinstance(request, GenerationBatchRequest) for request in selected):
+            raise ContractError("requests must contain GenerationBatchRequest values")
+        if not selected:
+            return ()
         max_length = self._max_context_length()
-        if max_length is not None and len(prompt_ids) >= max_length:
-            raise VLLMBackendError(
-                VLLMBackendErrorCode.CONTEXT_TOO_LONG,
-                f"generation prompt produces {len(prompt_ids)} tokens, leaving no room "
-                f"within model limit {max_length} for decoded output",
+        prompts: list[list[int]] = []
+        sampling_params: list[Any] = []
+        descriptors: list[tuple[int, int, list[int], Any, GenerationConfig]] = []
+        for request_index, request in enumerate(selected):
+            prompt_ids = self._tokenize(
+                self._render_context(request.context) + request.prefix
             )
-
-        prompts = [list(prompt_ids) for _ in range(config.num_samples)]
-        sampling_params = _create_generation_params(config)
+            if not prompt_ids:
+                raise VLLMBackendError(
+                    VLLMBackendErrorCode.TOKENIZATION_ERROR,
+                    "context plus prefix must contain at least one token",
+                )
+            if max_length is not None and len(prompt_ids) >= max_length:
+                raise VLLMBackendError(
+                    VLLMBackendErrorCode.CONTEXT_TOO_LONG,
+                    f"generation prompt produces {len(prompt_ids)} tokens, leaving no room "
+                    f"within model limit {max_length} for decoded output",
+                )
+            params_for_request = _create_generation_params(request.config)
+            for sample_index, params in enumerate(params_for_request):
+                prompts.append(list(prompt_ids))
+                sampling_params.append(params)
+                descriptors.append(
+                    (request_index, sample_index, prompt_ids, params, request.config)
+                )
         try:
             outputs = self.llm.generate(
                 prompts=prompts,
@@ -408,16 +438,15 @@ class VLLMGenerationBackend(_VLLMBackendBase):
                 f"vLLM failed while generating repeated samples: {error}",
             ) from error
 
-        if not isinstance(outputs, Sequence) or len(outputs) != config.num_samples:
+        if not isinstance(outputs, Sequence) or len(outputs) != len(descriptors):
             raise VLLMBackendError(
                 VLLMBackendErrorCode.MODEL_OUTPUT_ERROR,
                 "vLLM returned an unexpected number of generation outputs",
             )
 
-        records: list[GeneratedText] = []
-        for sample_index, (output, params) in enumerate(
-            zip(outputs, sampling_params, strict=True)
-        ):
+        grouped: list[list[GeneratedText]] = [[] for _ in selected]
+        for descriptor, output in zip(descriptors, outputs, strict=True):
+            request_index, sample_index, prompt_ids, params, config = descriptor
             if getattr(output, "finished", None) is not True:
                 raise VLLMBackendError(
                     VLLMBackendErrorCode.MODEL_OUTPUT_ERROR,
@@ -462,7 +491,7 @@ class VLLMGenerationBackend(_VLLMBackendBase):
                     VLLMBackendErrorCode.MODEL_OUTPUT_ERROR,
                     f"vLLM sampling params for sample {sample_index} lost its seed",
                 )
-            records.append(
+            grouped[request_index].append(
                 GeneratedText(
                     sample_index=sample_index,
                     seed=expected_seed,
@@ -475,4 +504,4 @@ class VLLMGenerationBackend(_VLLMBackendBase):
                     ),
                 )
             )
-        return records
+        return tuple(tuple(group) for group in grouped)
