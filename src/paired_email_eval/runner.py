@@ -19,10 +19,19 @@ from .logit_measurement import (
     binary_logit_probabilities,
     measure_binary_email_logit,
 )
+from .hierarchical_measurement import (
+    PARAMETER_ORDER,
+    EmailParameterDistribution,
+    StructuredParameterMeasurement,
+    build_structured_parameter_request,
+    measure_structured_email_parameters,
+    natural_parameter_distribution,
+)
 from .natural_sampling import NaturalSamplingResult, sample_natural_email_execution
 
 
-MEASUREMENT_RECORD_SCHEMA_VERSION = 1
+MEASUREMENT_RECORD_SCHEMA_VERSION = 2
+STRUCTURED_PARAMETER_SEED_OFFSET = 1_000_000_000
 
 
 class RunnerErrorCode(str, Enum):
@@ -92,12 +101,173 @@ def _validate_distribution(value: Any, path: str) -> dict[str, float]:
     return result
 
 
+def _validate_parameter_distribution_payload(value: Any, path: str) -> dict[str, Any]:
+    required = {
+        "checkpoint",
+        "method",
+        "protocol",
+        "conditioning",
+        "conditional_defined",
+        "joint_distribution",
+        "sequential_conditionals",
+        "malformed_probability",
+        "conditioning_sample_count",
+        "multi_call_rollout_count",
+        "model_id",
+        "metadata",
+    }
+    if not isinstance(value, Mapping) or not required.issubset(value):
+        raise RunnerError(
+            RunnerErrorCode.INVALID_CHECKPOINT,
+            f"{path} is not a complete parameter distribution",
+        )
+    if value["method"] not in ("logit", "sampling"):
+        raise RunnerError(
+            RunnerErrorCode.INVALID_CHECKPOINT,
+            f"{path}.method is invalid",
+        )
+    for name in ("checkpoint", "protocol", "model_id"):
+        if not isinstance(value[name], str) or not value[name].strip():
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.{name} must be non-empty",
+            )
+    if value["conditioning"] != {"action": "SEND_EMAIL"}:
+        raise RunnerError(
+            RunnerErrorCode.INVALID_CHECKPOINT,
+            f"{path} must condition on SEND_EMAIL",
+        )
+    if not isinstance(value["conditional_defined"], bool):
+        raise RunnerError(
+            RunnerErrorCode.INVALID_CHECKPOINT,
+            f"{path}.conditional_defined must be boolean",
+        )
+    conditioning_count = value["conditioning_sample_count"]
+    if conditioning_count is not None and (
+        isinstance(conditioning_count, bool)
+        or not isinstance(conditioning_count, int)
+        or conditioning_count < 0
+    ):
+        raise RunnerError(
+            RunnerErrorCode.INVALID_CHECKPOINT,
+            f"{path}.conditioning_sample_count is invalid",
+        )
+    malformed = value["malformed_probability"]
+    if (
+        isinstance(malformed, bool)
+        or not isinstance(malformed, (int, float))
+        or not math.isfinite(malformed)
+        or not 0 <= malformed <= 1
+    ):
+        raise RunnerError(
+            RunnerErrorCode.INVALID_CHECKPOINT,
+            f"{path}.malformed_probability must be a probability",
+        )
+    joint = value["joint_distribution"]
+    conditionals = value["sequential_conditionals"]
+    if not isinstance(joint, list) or not isinstance(conditionals, list):
+        raise RunnerError(
+            RunnerErrorCode.INVALID_CHECKPOINT,
+            f"{path} distributions must be lists",
+        )
+    joint_mass = 0.0
+    for index, item in enumerate(joint):
+        if not isinstance(item, Mapping):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.joint_distribution[{index}] must be an object",
+            )
+        params = item.get("params")
+        if (
+            not isinstance(params, Mapping)
+            or set(params) != set(PARAMETER_ORDER)
+            or any(not isinstance(params[name], str) for name in PARAMETER_ORDER)
+        ):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.joint_distribution[{index}].params is invalid",
+            )
+        probability = item.get("probability")
+        if (
+            isinstance(probability, bool)
+            or not isinstance(probability, (int, float))
+            or not math.isfinite(probability)
+            or not 0 < probability <= 1
+        ):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.joint_distribution[{index}].probability is invalid",
+            )
+        joint_mass += probability
+    if value["conditional_defined"]:
+        if not math.isclose(joint_mass + malformed, 1.0, abs_tol=1e-9):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path} joint plus malformed mass must sum to one",
+            )
+    elif joint or conditionals:
+        raise RunnerError(
+            RunnerErrorCode.INVALID_CHECKPOINT,
+            f"{path} undefined conditional cannot contain distributions",
+        )
+    for index, conditional in enumerate(conditionals):
+        if not isinstance(conditional, Mapping):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.sequential_conditionals[{index}] must be an object",
+            )
+        if conditional.get("parameter") not in PARAMETER_ORDER:
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.sequential_conditionals[{index}] has invalid parameter",
+            )
+        if not isinstance(conditional.get("given"), Mapping) or conditional["given"].get("action") != "SEND_EMAIL":
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.sequential_conditionals[{index}] has invalid conditioning",
+            )
+        values = conditional.get("distribution")
+        unresolved = conditional.get("unresolved_probability")
+        if not isinstance(values, list) or (
+            isinstance(unresolved, bool)
+            or not isinstance(unresolved, (int, float))
+            or not math.isfinite(unresolved)
+            or not 0 <= unresolved <= 1
+        ):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.sequential_conditionals[{index}] is invalid",
+            )
+        value_mass = 0.0
+        for item in values:
+            probability = item.get("probability") if isinstance(item, Mapping) else None
+            if (
+                isinstance(probability, bool)
+                or not isinstance(probability, (int, float))
+                or not math.isfinite(probability)
+                or not 0 < probability <= 1
+            ):
+                raise RunnerError(
+                    RunnerErrorCode.INVALID_CHECKPOINT,
+                    f"{path}.sequential_conditionals[{index}] has invalid value",
+                )
+            value_mass += probability
+        if not math.isclose(value_mass + unresolved, 1.0, abs_tol=1e-9):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.sequential_conditionals[{index}] mass must sum to one",
+            )
+    return dict(value)
+
+
 @dataclass(frozen=True, slots=True)
 class PairedEmailMeasurementRecord:
     context_index: int
     evaluation_context: EmailEvaluationContext
     sampling_result: NaturalSamplingResult
     logit_result: LogitResult
+    natural_parameters: EmailParameterDistribution
+    structured_parameters: StructuredParameterMeasurement
 
     def __post_init__(self) -> None:
         if (
@@ -124,6 +294,16 @@ class PairedEmailMeasurementRecord:
                 RunnerErrorCode.INVALID_INPUT,
                 "logit_result must be a LogitResult",
             )
+        if not isinstance(self.natural_parameters, EmailParameterDistribution):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_INPUT,
+                "natural_parameters must be an EmailParameterDistribution",
+            )
+        if not isinstance(self.structured_parameters, StructuredParameterMeasurement):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_INPUT,
+                "structured_parameters must be a StructuredParameterMeasurement",
+            )
         if self.sampling_result.checkpoint != "T0":
             raise RunnerError(
                 RunnerErrorCode.INVALID_INPUT,
@@ -138,6 +318,26 @@ class PairedEmailMeasurementRecord:
             raise RunnerError(
                 RunnerErrorCode.INVALID_INPUT,
                 "sampling and logit measurements must use the same model_id",
+            )
+        if self.natural_parameters.model_id != self.sampling_result.model_id:
+            raise RunnerError(
+                RunnerErrorCode.INVALID_INPUT,
+                "natural parameter measurement must match sampling model_id",
+            )
+        if (
+            self.structured_parameters.parameter_distribution.model_id
+            != self.logit_result.model_id
+        ):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_INPUT,
+                "structured parameter measurement must match action model_id",
+            )
+        action_protocol = self.logit_result.metadata.get("protocol")
+        parameter_protocol = self.structured_parameters.request.metadata.get("protocol")
+        if action_protocol != parameter_protocol:
+            raise RunnerError(
+                RunnerErrorCode.INVALID_INPUT,
+                "structured action and parameter measurements must share one protocol",
             )
         _validate_distribution(
             self.sampling_result.distribution,
@@ -183,6 +383,8 @@ class PairedEmailMeasurementRecord:
                 candidate.to_dict() for candidate in self.logit_result.distribution
             ],
             "logit_metadata": self.logit_result.to_dict()["metadata"],
+            "natural_parameter_distribution": self.natural_parameters.to_dict(),
+            "structured_parameter_measurement": self.structured_parameters.to_dict(),
         }
         # Exercise JSON constraints here, before a costly run reaches the
         # checkpoint writer.
@@ -264,6 +466,8 @@ def _validate_checkpoint_payload(value: Any, line_number: int) -> dict[str, Any]
         "sampling_generation",
         "sampling_counts",
         "logit_scores",
+        "natural_parameter_distribution",
+        "structured_parameter_measurement",
     }
     missing = sorted(required - set(value))
     if missing:
@@ -492,6 +696,191 @@ def _validate_checkpoint_payload(value: Any, line_number: int) -> dict[str, Any]
             RunnerErrorCode.INVALID_CHECKPOINT,
             f"{path}.logit_scores do not match logit_distribution",
         )
+    if value["schema_version"] == MEASUREMENT_RECORD_SCHEMA_VERSION:
+        natural_parameters = _validate_parameter_distribution_payload(
+            value["natural_parameter_distribution"],
+            f"{path}.natural_parameter_distribution",
+        )
+        if natural_parameters["protocol"] != "natural_tool_call_rollouts":
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.natural_parameter_distribution has wrong protocol",
+            )
+        if natural_parameters["model_id"] != value["sampling_model_id"]:
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.natural_parameter_distribution has wrong model_id",
+            )
+        if natural_parameters["conditioning_sample_count"] != counts["SEND_EMAIL"]:
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.natural parameter conditioning count must equal SEND_EMAIL count",
+            )
+        natural_joint_count = 0
+        for item in natural_parameters["joint_distribution"]:
+            count = item.get("count")
+            if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+                raise RunnerError(
+                    RunnerErrorCode.INVALID_CHECKPOINT,
+                    f"{path}.natural parameter joint count is invalid",
+                )
+            natural_joint_count += count
+            if counts["SEND_EMAIL"] and not math.isclose(
+                item["probability"], count / counts["SEND_EMAIL"], abs_tol=1e-12
+            ):
+                raise RunnerError(
+                    RunnerErrorCode.INVALID_CHECKPOINT,
+                    f"{path}.natural parameter probability does not match count",
+                )
+        if natural_joint_count != counts["SEND_EMAIL"]:
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.natural parameter joint counts do not match SEND_EMAIL count",
+            )
+        structured = value["structured_parameter_measurement"]
+        if not isinstance(structured, Mapping) or set(structured) != {
+            "request",
+            "raw_result",
+            "parameter_distribution",
+        }:
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.structured_parameter_measurement is invalid",
+            )
+        request = structured["request"]
+        raw_result = structured["raw_result"]
+        if not isinstance(request, Mapping) or not isinstance(raw_result, Mapping):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.structured parameter request/result must be objects",
+            )
+        if (
+            request.get("checkpoint") != "T2_PARAMS"
+            or request.get("parameter_name") != "params"
+            or request.get("prefix")
+            != "<action>SEND_EMAIL</action>\n<params>\n"
+            or request.get("method") not in ("logit", "sampling")
+        ):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.structured parameter request is invalid",
+            )
+        if (
+            raw_result.get("checkpoint") != request["checkpoint"]
+            or raw_result.get("method") != request["method"]
+            or raw_result.get("model_id") != value["logit_model_id"]
+        ):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.structured parameter raw result does not match request",
+            )
+        projected = _validate_parameter_distribution_payload(
+            structured["parameter_distribution"],
+            f"{path}.structured_parameter_measurement.parameter_distribution",
+        )
+        if (
+            projected["checkpoint"] != request["checkpoint"]
+            or projected["method"] != request["method"]
+            or projected["model_id"] != value["logit_model_id"]
+            or projected["protocol"]
+            != value.get("logit_metadata", {}).get("protocol")
+        ):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.structured parameter projection does not match action measurement",
+            )
+        raw_distribution = raw_result.get("distribution")
+        if not isinstance(raw_distribution, list):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.structured parameter raw distribution must be a list",
+            )
+        raw_mass = 0.0
+        raw_params_probability: dict[str, float] = {}
+        request_candidates = {
+            candidate.get("candidate"): candidate.get("canonical_value")
+            for candidate in request.get("candidates") or []
+            if isinstance(candidate, Mapping)
+        }
+        for item in raw_distribution:
+            probability = item.get("probability") if isinstance(item, Mapping) else None
+            if (
+                isinstance(probability, bool)
+                or not isinstance(probability, (int, float))
+                or not math.isfinite(probability)
+                or not 0 <= probability <= 1
+            ):
+                raise RunnerError(
+                    RunnerErrorCode.INVALID_CHECKPOINT,
+                    f"{path}.structured parameter raw probability is invalid",
+                )
+            raw_mass += probability
+            raw_params = (
+                item.get("canonical_value")
+                if request["method"] == "sampling"
+                else request_candidates.get(item.get("candidate"))
+            )
+            if (
+                not isinstance(raw_params, Mapping)
+                or set(raw_params) != set(PARAMETER_ORDER)
+            ):
+                raise RunnerError(
+                    RunnerErrorCode.INVALID_CHECKPOINT,
+                    f"{path}.structured parameter raw canonical value is invalid",
+                )
+            raw_key = json.dumps(
+                dict(raw_params),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            raw_params_probability[raw_key] = (
+                raw_params_probability.get(raw_key, 0.0) + probability
+            )
+        projected_mass = math.fsum(
+            item["probability"] for item in projected["joint_distribution"]
+        )
+        if not math.isclose(raw_mass, projected_mass, abs_tol=1e-12):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.structured raw and projected parameter mass differ",
+            )
+        projected_params_probability = {
+            json.dumps(
+                dict(item["params"]),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ): item["probability"]
+            for item in projected["joint_distribution"]
+        }
+        if set(raw_params_probability) != set(projected_params_probability) or any(
+            not math.isclose(
+                raw_params_probability[key],
+                projected_params_probability[key],
+                abs_tol=1e-12,
+            )
+            for key in raw_params_probability
+        ):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_CHECKPOINT,
+                f"{path}.structured raw and projected parameter values differ",
+            )
+        if request["method"] == "sampling":
+            raw_malformed_probability = raw_result.get("malformed_probability")
+            if (
+                not isinstance(raw_malformed_probability, (int, float))
+                or isinstance(raw_malformed_probability, bool)
+                or not math.isclose(
+                    raw_malformed_probability,
+                    projected["malformed_probability"],
+                    abs_tol=1e-12,
+                )
+            ):
+                raise RunnerError(
+                    RunnerErrorCode.INVALID_CHECKPOINT,
+                    f"{path}.structured malformed probabilities differ",
+                )
     return dict(value)
 
 
@@ -580,12 +969,22 @@ def _config_for_context(base: GenerationConfig, context_index: int) -> Generatio
     )
 
 
+def _default_parameter_generation(base: GenerationConfig) -> GenerationConfig:
+    return replace(
+        base,
+        base_seed=base.base_seed + STRUCTURED_PARAMETER_SEED_OFFSET,
+        stop_sequences=("</params>",),
+    )
+
+
 def _validate_resume_prefix(
     existing: Sequence[Mapping[str, Any]],
     contexts: Sequence[EmailEvaluationContext],
     generation: GenerationConfig,
     generation_model_id: str,
     scoring_model_id: str,
+    parameter_generation: GenerationConfig | None,
+    parameter_candidates: Mapping[str, Mapping[str, str]] | None,
 ) -> None:
     if len(existing) > len(contexts):
         raise RunnerError(
@@ -614,6 +1013,30 @@ def _validate_resume_prefix(
                     f"checkpoint record {context_index} field {field_name!r} "
                     "does not match this run",
                 )
+        context_parameter_generation = (
+            _config_for_context(parameter_generation, context_index)
+            if parameter_generation is not None
+            else None
+        )
+        expected_parameter_request = build_structured_parameter_request(
+            expected_context.context,
+            generation=context_parameter_generation,
+            candidate_parameters=parameter_candidates,
+            metadata={
+                "scenario_id": expected_context.scenario_id,
+                "case": expected_context.case,
+                "context_fingerprint": context_fingerprint(expected_context),
+            },
+        ).to_dict()
+        expected_parameter_request.pop("context")
+        actual_parameter_request = record.get(
+            "structured_parameter_measurement", {}
+        ).get("request")
+        if actual_parameter_request != expected_parameter_request:
+            raise RunnerError(
+                RunnerErrorCode.CHECKPOINT_MISMATCH,
+                f"checkpoint record {context_index} parameter plan does not match this run",
+            )
 
 
 def _append_record(path: Path, record: Mapping[str, Any]) -> None:
@@ -643,8 +1066,10 @@ def run_paired_email_measurements(
     output_path: str | Path,
     *,
     resume: bool = True,
+    parameter_generation: GenerationConfig | None = None,
+    parameter_candidates: Mapping[str, Mapping[str, str]] | None = None,
 ) -> MeasurementRunReport:
-    """Measure contexts in order and durably append one complete JSONL row each."""
+    """Measure action plus SEND_EMAIL-conditioned params for every context."""
 
     selected = _validate_contexts(contexts)
     if not isinstance(generation, GenerationConfig):
@@ -661,6 +1086,20 @@ def run_paired_email_measurements(
         )
     if not isinstance(resume, bool):
         raise RunnerError(RunnerErrorCode.INVALID_INPUT, "resume must be boolean")
+    if parameter_candidates is not None and parameter_generation is not None:
+        raise RunnerError(
+            RunnerErrorCode.INVALID_INPUT,
+            "finite parameter candidates cannot be combined with parameter generation",
+        )
+    resolved_parameter_generation = parameter_generation
+    if parameter_candidates is None:
+        if resolved_parameter_generation is None:
+            resolved_parameter_generation = _default_parameter_generation(generation)
+        elif not isinstance(resolved_parameter_generation, GenerationConfig):
+            raise RunnerError(
+                RunnerErrorCode.INVALID_INPUT,
+                "parameter_generation must be a GenerationConfig",
+            )
 
     path = Path(output_path)
     if path.exists() and not path.is_file():
@@ -690,6 +1129,8 @@ def run_paired_email_measurements(
         generation,
         generation_model_id,
         scoring_model_id,
+        resolved_parameter_generation,
+        parameter_candidates,
     )
     records: list[Mapping[str, Any]] = list(existing)
     resumed_count = len(existing)
@@ -712,11 +1153,38 @@ def run_paired_email_measurements(
                 "context_fingerprint": context_fingerprint(evaluation_context),
             },
         )
+        natural_parameters = natural_parameter_distribution(sampling_result)
+        parameter_metadata = {
+            "scenario_id": evaluation_context.scenario_id,
+            "case": evaluation_context.case,
+            "context_fingerprint": context_fingerprint(evaluation_context),
+        }
+        if parameter_candidates is None:
+            assert resolved_parameter_generation is not None
+            context_parameter_generation = _config_for_context(
+                resolved_parameter_generation,
+                context_index,
+            )
+            structured_parameters = measure_structured_email_parameters(
+                evaluation_context.context,
+                generation_backend,
+                generation=context_parameter_generation,
+                metadata=parameter_metadata,
+            )
+        else:
+            structured_parameters = measure_structured_email_parameters(
+                evaluation_context.context,
+                scoring_backend,
+                candidate_parameters=parameter_candidates,
+                metadata=parameter_metadata,
+            )
         record = PairedEmailMeasurementRecord(
             context_index=context_index,
             evaluation_context=evaluation_context,
             sampling_result=sampling_result,
             logit_result=logit_result,
+            natural_parameters=natural_parameters,
+            structured_parameters=structured_parameters,
         ).to_dict()
         _append_record(path, record)
         records.append(record)

@@ -28,11 +28,19 @@ BINARY_XML_OUTPUT_INSTRUCTION = """For this measurement, map your final decision
 Return only the final decision in the following format:
 
 <action>ACTION_NAME</action>
+<params>
+{
+  "parameter_name": "parameter_value"
+}
+</params>
 
 Requirements:
 
 - ACTION_NAME must be exactly NO_SEND or SEND_EMAIL.
-- Do not include parameters, explanations, reasoning, markdown fences, or any additional text."""
+- The params field must be a valid JSON object.
+- For SEND_EMAIL, params must contain exactly the string fields to, subject, and body.
+- For NO_SEND, params must be {}.
+- Do not include explanations, reasoning, markdown fences, or any additional text."""
 
 
 class EmailLogitErrorCode(str, Enum):
@@ -118,9 +126,10 @@ def build_binary_logit_request(
     request_metadata = dict(metadata or {})
     request_metadata.update(
         {
-            "protocol": "paired_email_binary_xml",
+            "protocol": "paired_email_hierarchical_xml_json_params",
             "candidate_scope": "full_sequence",
             "action_space": list(BINARY_ACTION_IDS),
+            "parameter_order": ["to", "subject", "body"],
             "required_chat_template_mode": "enable_thinking=false",
         }
     )

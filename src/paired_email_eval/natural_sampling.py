@@ -312,7 +312,7 @@ _PARAMETER_PATTERN = re.compile(
 
 
 def _valid_send_arguments(value: Any) -> bool:
-    return isinstance(value, Mapping) and all(
+    return isinstance(value, Mapping) and set(value) == set(SEND_EMAIL_REQUIRED_PARAMETERS) and all(
         isinstance(value.get(parameter), str)
         for parameter in SEND_EMAIL_REQUIRED_PARAMETERS
     )

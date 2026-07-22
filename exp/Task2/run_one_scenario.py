@@ -1,4 +1,4 @@
-"""Run one real paired-email scenario through sampling and logit measurement."""
+"""Run one paired-email scenario through hierarchical PExec measurement."""
 
 from __future__ import annotations
 
@@ -30,9 +30,11 @@ DEFAULT_OUTPUT = (
     / "exp"
     / "Task2"
     / "results"
-    / "qwen3_5_9b_scenario_001.jsonl"
+    / "qwen3_5_9b_scenario_001_hierarchical.jsonl"
 )
-DEFAULT_SUMMARY = DEFAULT_OUTPUT.with_name("qwen3_5_9b_scenario_001_summary.json")
+DEFAULT_SUMMARY = DEFAULT_OUTPUT.with_name(
+    "qwen3_5_9b_scenario_001_hierarchical_summary.json"
+)
 
 
 def parse_args() -> argparse.Namespace:
